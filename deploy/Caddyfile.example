@@ -1,0 +1,12 @@
+# RHEL: /etc/caddy/Caddyfile
+# Caddy on the host proxies to SA Hub Docker (frontend on port 3000).
+# DNS A record: sa-hub.example.com → your public IP
+# UDM: forward WAN 80 and 443 to this host. See README "Production" section.
+
+sa-hub.example.com {
+    reverse_proxy localhost:3000 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+        header_up X-Real-IP {remote_host}
+    }
+}

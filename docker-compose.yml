@@ -1,0 +1,65 @@
+version: "3.9"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sa-hub-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    container_name: sa-hub-backend
+    # Explicit command — do not use --reload in production (breaks on RHEL/SELinux).
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    volumes:
+      # :z relabels for SELinux on RHEL (see README). Do not mount ./backend over /app —
+      # that causes PermissionError on the host tree and breaks the container.
+      - ./data:/app/data:z
+    environment:
+      - DATABASE_URL=sqlite:////app/data/sa_hub.db
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://ollama:11434/v1}
+      - LLM_MODEL=${LLM_MODEL:-qwen2.5:7b-instruct}
+      - SLACK_CLIENT_ID=${SLACK_CLIENT_ID}
+      - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SECRET_KEY=${SECRET_KEY}
+      - AUTH_USERNAME=${AUTH_USERNAME:-}
+      - AUTH_PASSWORD_HASH=${AUTH_PASSWORD_HASH:-}
+      - AUTH_PASSWORD_HASH_FILE=${AUTH_PASSWORD_HASH_FILE:-}
+      - AUTH_PASSWORD=${AUTH_PASSWORD:-}
+      - AUTH_SESSION_DAYS=${AUTH_SESSION_DAYS:-30}
+      - PUBLIC_URL=${PUBLIC_URL:-http://localhost:3000}
+      - FRONTEND_URL=${FRONTEND_URL:-${PUBLIC_URL:-http://localhost:3000}}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: sa-hub-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  data:
+  ollama_data:
