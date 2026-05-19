@@ -88,7 +88,13 @@ function AppLayout() {
           navigate('/login', { replace: true })
         }
       })
-      .catch(() => navigate('/login', { replace: true }))
+      .catch((e) => {
+        if (e instanceof ApiError && e.status === 401) {
+          navigate('/login', { replace: true })
+        } else {
+          setSession({ auth_required: false, authenticated: true })
+        }
+      })
   }, [navigate])
 
   useEffect(() => {
@@ -102,8 +108,30 @@ function AppLayout() {
   const handleSync = async () => {
     setSyncing(true)
     try {
-      await post('/sync')
-      setTimeout(() => setSyncing(false), 3000)
+      const res = await post('/sync')
+      if (!res?.ok) {
+        setSyncing(false)
+        return
+      }
+      const poll = async (attempts = 0) => {
+        if (attempts > 120) {
+          setSyncing(false)
+          return
+        }
+        try {
+          const { running } = await get('/sync/status')
+          if (!running) {
+            setSyncing(false)
+            get('/auth/status').then(setAuthStatus).catch(() => {})
+            get('/follow-ups').then((data) => setFollowUpCount(data.length)).catch(() => {})
+            return
+          }
+        } catch {
+          /* backend busy — keep polling */
+        }
+        setTimeout(() => poll(attempts + 1), 2000)
+      }
+      poll()
     } catch {
       setSyncing(false)
     }

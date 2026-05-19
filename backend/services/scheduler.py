@@ -12,47 +12,57 @@ scheduler = AsyncIOScheduler()
 
 
 async def run_full_sync():
-    logger.info("Starting hourly sync...")
-    async with SessionLocal() as db:
-        try:
-            # 1. Pull Gmail (contacts + follow-ups)
-            await sync_gmail(db)
-            logger.info("Gmail sync complete")
-        except Exception as e:
-            logger.error(f"Gmail sync failed: {e}")
+    from services.sync_state import is_sync_running
+    if is_sync_running():
+        logger.info("Sync already in progress, skipping")
+        return
 
-        try:
-            # 2. Enrich contacts with AI (company/title inference)
-            await enrich_contacts(db)
-            logger.info("Contact enrichment complete")
-        except Exception as e:
-            logger.error(f"Contact enrichment failed: {e}")
+    from services.sync_state import run_sync_guarded
 
-        docs_content = ""
-        slack_content = ""
+    async def _do_sync():
+        logger.info("Starting sync...")
+        async with SessionLocal() as db:
+            await _run_sync_body(db)
 
-        try:
-            # 3. Pull Google Docs
-            docs_content = await fetch_recent_docs(db)
-            logger.info("Drive sync complete")
-        except Exception as e:
-            logger.error(f"Drive sync failed: {e}")
+    await run_sync_guarded(_do_sync)
 
-        try:
-            # 4. Pull Slack (if connected)
-            slack_content = await fetch_recent_messages(db)
-            logger.info("Slack sync complete")
-        except Exception as e:
-            logger.error(f"Slack sync failed: {e}")
 
-        try:
-            # 5. Generate one-pager
-            await generate_one_pager(db, docs_content, slack_content)
-            logger.info("One-pager generation complete")
-        except Exception as e:
-            logger.error(f"One-pager generation failed: {e}")
+async def _run_sync_body(db):
+    logger.info("Sync body started")
+    try:
+        await sync_gmail(db)
+        logger.info("Gmail sync complete")
+    except Exception as e:
+        logger.error(f"Gmail sync failed: {e}")
 
-    logger.info("Hourly sync finished")
+    try:
+        await enrich_contacts(db)
+        logger.info("Contact enrichment complete")
+    except Exception as e:
+        logger.error(f"Contact enrichment failed: {e}")
+
+    docs_content = ""
+    slack_content = ""
+
+    try:
+        docs_content = await fetch_recent_docs(db)
+        logger.info("Drive sync complete")
+    except Exception as e:
+        logger.error(f"Drive sync failed: {e}")
+
+    try:
+        slack_content = await fetch_recent_messages(db)
+        logger.info("Slack sync complete")
+    except Exception as e:
+        logger.error(f"Slack sync failed: {e}")
+
+    try:
+        await generate_one_pager(db, docs_content, slack_content)
+        logger.info("One-pager generation complete")
+    except Exception as e:
+        logger.error(f"One-pager generation failed: {e}")
+
+    logger.info("Sync body finished")
 
 
 def start_scheduler():

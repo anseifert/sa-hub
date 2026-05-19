@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 from datetime import datetime, timezone
@@ -94,7 +95,7 @@ async def get_credentials(db: AsyncSession) -> Credentials | None:
         scopes=json.loads(token.scopes) if token.scopes else SCOPES,
     )
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        await asyncio.to_thread(creds.refresh, Request())
         await save_token(db, creds)
     return creds
 

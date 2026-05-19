@@ -180,10 +180,21 @@ async def update_section(
 
 # ── Sync ──────────────────────────────────────────────────
 
+@router.get("/sync/status")
+async def sync_status():
+    from services.sync_state import is_sync_running
+    return {"running": is_sync_running()}
+
+
 @router.post("/sync")
 async def trigger_sync():
     from services.scheduler import run_full_sync
+    from services.sync_state import is_sync_running
     import asyncio
+
+    if is_sync_running():
+        return {"ok": False, "message": "Sync already in progress"}
+
     asyncio.create_task(run_full_sync())
     return {"ok": True, "message": "Sync started in background"}
 
