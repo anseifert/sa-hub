@@ -1,7 +1,8 @@
 import asyncio
+import logging
 import os
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -11,6 +12,8 @@ from sqlalchemy import select
 from models.db import OAuthToken
 from services.url_config import normalize_base_url, get_public_url
 from services.db_util import commit_with_retry
+
+logger = logging.getLogger(__name__)
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -60,6 +63,45 @@ def get_flow():
     )
 
 
+def _utc_expiry(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def credentials_from_token(token: OAuthToken) -> Credentials:
+    """Build Credentials with expiry so we refresh before API 401s."""
+    return Credentials(
+        token=token.access_token,
+        refresh_token=token.refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.getenv("GOOGLE_CLIENT_ID"),
+        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+        scopes=json.loads(token.scopes) if token.scopes else SCOPES,
+        expiry=_utc_expiry(token.token_expiry),
+    )
+
+
+def credentials_need_refresh(creds: Credentials, *, skew_minutes: int = 5) -> bool:
+    if not creds.refresh_token:
+        return False
+    if creds.expired:
+        return True
+    if creds.expiry is None:
+        return True
+    return creds.expiry <= datetime.now(timezone.utc) + timedelta(minutes=skew_minutes)
+
+
+async def refresh_credentials(db: AsyncSession, creds: Credentials) -> Credentials:
+    """Refresh access token and persist to DB."""
+    logger.info("Refreshing Google access token")
+    await asyncio.to_thread(creds.refresh, Request())
+    await save_token(db, creds)
+    return creds
+
+
 async def save_token(db: AsyncSession, credentials: Credentials):
     result = await db.execute(select(OAuthToken).where(OAuthToken.provider == "google"))
     token = result.scalar_one_or_none()
@@ -84,17 +126,13 @@ async def get_credentials(db: AsyncSession) -> Credentials | None:
     token = result.scalar_one_or_none()
     if not token:
         return None
-    creds = Credentials(
-        token=token.access_token,
-        refresh_token=token.refresh_token,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=os.getenv("GOOGLE_CLIENT_ID"),
-        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-        scopes=json.loads(token.scopes) if token.scopes else SCOPES,
-    )
-    if creds.expired and creds.refresh_token:
-        await asyncio.to_thread(creds.refresh, Request())
-        await save_token(db, creds)
+    creds = credentials_from_token(token)
+    if credentials_need_refresh(creds):
+        try:
+            creds = await refresh_credentials(db, creds)
+        except Exception as exc:
+            logger.error("Google token refresh failed: %s", exc)
+            raise
     return creds
 
 

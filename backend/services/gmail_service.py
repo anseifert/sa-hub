@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from models.db import Contact, FollowUp, SyncLog
-from services.google_auth import get_credentials
+from services.google_auth import get_credentials, credentials_need_refresh, refresh_credentials
 from services.db_util import commit_with_retry, rollback_session
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,8 @@ def _parse_date(date_str: str) -> datetime | None:
 
 def _fetch_gmail_data(creds: Credentials) -> dict:
     """Blocking Gmail API work — run via asyncio.to_thread only."""
-    if creds.expired and creds.refresh_token:
+    if credentials_need_refresh(creds):
+        logger.info("Refreshing Google token during Gmail sync")
         creds.refresh(Request())
 
     service = build("gmail", "v1", credentials=creds)

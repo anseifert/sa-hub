@@ -138,20 +138,51 @@ async def resolve_follow_up(follow_up_id: int, db: AsyncSession = Depends(get_db
 
 @router.get("/one-pager")
 async def get_one_pager(db: AsyncSession = Depends(get_db)):
+    from services.ai_service import ONE_PAGER_SECTIONS, ensure_one_pager_sections
+
+    await ensure_one_pager_sections(db)
+
     result = await db.execute(select(OnePager).order_by(OnePager.sort_order))
-    sections = result.scalars().all()
-    return [
-        {
-            "id": s.id,
-            "section_key": s.section_key,
-            "title": s.title,
-            "content": s.content,
-            "pinned": s.pinned,
-            "sort_order": s.sort_order,
-            "last_ai_generated": s.last_ai_generated.isoformat() if s.last_ai_generated else None,
-        }
-        for s in sections
-    ]
+    by_key = {s.section_key: s for s in result.scalars().all()}
+
+    rows = []
+    for tpl in ONE_PAGER_SECTIONS:
+        s = by_key.get(tpl["key"])
+        if s:
+            rows.append({
+                "id": s.id,
+                "section_key": s.section_key,
+                "title": s.title,
+                "content": s.content,
+                "pinned": s.pinned,
+                "sort_order": s.sort_order,
+                "last_ai_generated": s.last_ai_generated.isoformat() if s.last_ai_generated else None,
+            })
+        else:
+            rows.append({
+                "id": None,
+                "section_key": tpl["key"],
+                "title": tpl["title"],
+                "content": None,
+                "pinned": False,
+                "sort_order": tpl["order"],
+                "last_ai_generated": None,
+            })
+    return rows
+
+
+@router.post("/one-pager/generate")
+async def trigger_one_pager_generate():
+    """Regenerate one-pager only (re-fetches Drive/Slack snippets first)."""
+    from services.sync_state import is_sync_running
+    import asyncio
+
+    if is_sync_running():
+        return {"ok": False, "message": "Full sync in progress — wait for it to finish"}
+
+    from services.scheduler import run_one_pager_only
+    asyncio.create_task(run_one_pager_only())
+    return {"ok": True, "message": "One-pager generation started"}
 
 
 class SectionUpdate(BaseModel):

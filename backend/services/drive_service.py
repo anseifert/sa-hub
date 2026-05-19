@@ -4,7 +4,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from sqlalchemy.ext.asyncio import AsyncSession
 from models.db import SyncLog
-from services.google_auth import get_credentials
+from services.google_auth import get_credentials, credentials_need_refresh
+from google.auth.transport.requests import Request
 from services.db_util import commit_with_retry, rollback_session
 from datetime import datetime
 
@@ -33,6 +34,9 @@ def _format_drive_error(exc: Exception) -> str:
 
 
 def _fetch_drive_docs_blocking(creds, max_docs: int) -> str:
+    if credentials_need_refresh(creds):
+        logger.info("Refreshing Google token during Drive sync")
+        creds.refresh(Request())
     service = build("drive", "v3", credentials=creds)
     results = service.files().list(
         q=f"mimeType='{GOOGLE_DOC_MIME}' and trashed=false",

@@ -60,6 +60,22 @@ async def _run_sync_body():
     logger.info("Sync body finished")
 
 
+async def run_one_pager_only():
+    """Refresh Drive/Slack context and regenerate the one-pager."""
+    from services.sync_state import run_sync_guarded
+
+    async def _do():
+        docs_content = await _run_sync_step("Drive sync (one-pager)", fetch_recent_docs) or ""
+        slack_content = await _run_sync_step("Slack sync (one-pager)", fetch_recent_messages) or ""
+
+        async def _gen(db):
+            await generate_one_pager(db, docs_content, slack_content)
+
+        await _run_sync_step("One-pager generation", _gen)
+
+    await run_sync_guarded(_do)
+
+
 def start_scheduler():
     scheduler.add_job(
         run_full_sync,

@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import './pages.css'
-import { Pin, PinOff, Edit3, Check, X, Clock } from 'lucide-react'
-import { get, patch } from '../api.js'
+import { Pin, PinOff, Edit3, Check, X, Clock, RefreshCw } from 'lucide-react'
+import { get, patch, post } from '../api.js'
+import { SYNC_COMPLETE_EVENT } from '../syncEvents.js'
 
 function Section({ section, onUpdate }) {
   const [editing, setEditing] = useState(false)
@@ -66,7 +67,7 @@ function Section({ section, onUpdate }) {
           <div className="section-content">
             {section.content
               ? section.content.split('\n').map((line, i) => <p key={i}>{line}</p>)
-              : <span className="text-muted">Waiting for next sync...</span>
+              : <span className="text-muted">Run Sync Now to populate this section…</span>
             }
           </div>
         )}
@@ -78,16 +79,63 @@ function Section({ section, onUpdate }) {
 export default function OnePager() {
   const [sections, setSections] = useState([])
   const [loading, setLoading] = useState(true)
+  const [generating, setGenerating] = useState(false)
+  const [syncStatus, setSyncStatus] = useState(null)
 
-  useEffect(() => {
-    get('/one-pager')
+  const loadSections = useCallback(() => {
+    return get('/one-pager')
       .then(data => { setSections(data); setLoading(false) })
       .catch(() => setLoading(false))
   }, [])
 
-  const handleUpdate = (key, changes) => {
-    setSections(prev => prev.map(s => s.section_key === key ? { ...s, ...changes } : s))
+  const loadSyncStatus = useCallback(() => {
+    get('/auth/status')
+      .then(s => setSyncStatus(s?.one_pager_sync))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    loadSections()
+    loadSyncStatus()
+    const onSync = () => {
+      loadSections()
+      loadSyncStatus()
+    }
+    window.addEventListener(SYNC_COMPLETE_EVENT, onSync)
+    return () => window.removeEventListener(SYNC_COMPLETE_EVENT, onSync)
+  }, [loadSections, loadSyncStatus])
+
+  const handleRegenerate = async () => {
+    setGenerating(true)
+    try {
+      const res = await post('/one-pager/generate')
+      if (!res?.ok) {
+        setGenerating(false)
+        return
+      }
+      const poll = async (n = 0) => {
+        if (n > 90) {
+          setGenerating(false)
+          loadSections()
+          loadSyncStatus()
+          return
+        }
+        const { running } = await get('/sync/status').catch(() => ({ running: false }))
+        if (!running) {
+          setGenerating(false)
+          loadSections()
+          loadSyncStatus()
+          return
+        }
+        setTimeout(() => poll(n + 1), 2000)
+      }
+      poll()
+    } catch {
+      setGenerating(false)
+    }
   }
+
+  const hasContent = sections.some(s => s.content?.trim())
 
   if (loading) return <div className="page"><div className="text-muted">Loading...</div></div>
 
@@ -96,19 +144,45 @@ export default function OnePager() {
       <div className="page-header">
         <div>
           <div className="page-title">One-Pager</div>
-          <div className="page-subtitle">AI-refreshed hourly · Pin sections to preserve edits</div>
+          <div className="page-subtitle">
+            Refreshed on sync · Pin sections to preserve edits
+          </div>
+          {syncStatus?.status === 'error' && (
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--accent)' }}>
+              Last generation failed: {syncStatus.message}
+            </div>
+          )}
         </div>
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={handleRegenerate}
+          disabled={generating}
+          type="button"
+        >
+          <RefreshCw size={13} className={generating ? 'spin' : ''} />
+          {generating ? 'Generating…' : 'Regenerate'}
+        </button>
       </div>
 
       {sections.length === 0 ? (
         <div className="empty">
           <div className="empty-icon">📄</div>
-          <div>No content yet — connect Google and run a sync to generate your one-pager.</div>
+          <div>Connect Google and run Sync Now to build your one-pager.</div>
         </div>
       ) : (
-        sections.map(s => (
-          <Section key={s.section_key} section={s} onUpdate={handleUpdate} />
-        ))
+        <>
+          {!hasContent && (
+            <div className="card" style={{ marginBottom: 12, fontSize: 13, color: 'var(--text-muted)' }}>
+              Sections appear after sync finishes the one-pager step (last in the pipeline).
+              Use <strong>Regenerate</strong> or <strong>Sync Now</strong> in the sidebar.
+            </div>
+          )}
+          {sections.map(s => (
+            <Section key={s.section_key} section={s} onUpdate={(key, changes) => {
+              setSections(prev => prev.map(x => x.section_key === key ? { ...x, ...changes } : x))
+            }} />
+          ))}
+        </>
       )}
     </div>
   )

@@ -32,6 +32,7 @@ export default function Connect({ authStatus: initialStatus }) {
   const slack = authStatus?.slack
   const driveSync = authStatus?.drive_sync
   const gmailSync = authStatus?.gmail_sync
+  const onePagerSync = authStatus?.one_pager_sync
 
   return (
     <div className="page">
@@ -82,6 +83,7 @@ export default function Connect({ authStatus: initialStatus }) {
             <>
               <SyncStatus label="Gmail sync" sync={gmailSync} />
               <SyncStatus label="Drive sync" sync={driveSync} />
+              <SyncStatus label="One-pager" sync={onePagerSync} />
             </>
           )}
         </div>

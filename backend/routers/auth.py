@@ -108,5 +108,6 @@ async def auth_status(db: AsyncSession = Depends(get_db), _user: str = Depends(r
         "slack": await slack_connected(),
         "gmail_sync": await _last_sync("gmail"),
         "drive_sync": await _last_sync("drive"),
+        "one_pager_sync": await _last_sync("one_pager"),
         "google_redirect_uri": get_redirect_uri(),
     }

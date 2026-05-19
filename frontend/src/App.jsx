@@ -8,6 +8,7 @@ import FollowUps from './pages/FollowUps.jsx'
 import Connect from './pages/Connect.jsx'
 import Login from './pages/Login.jsx'
 import { get, post, ApiError } from './api.js'
+import { notifySyncComplete } from './syncEvents.js'
 import './App.css'
 
 function Sidebar({ authStatus, session, onSync, syncing, followUpCount, onLogout }) {
@@ -124,6 +125,7 @@ function AppLayout() {
             setSyncing(false)
             get('/auth/status').then(setAuthStatus).catch(() => {})
             get('/follow-ups').then((data) => setFollowUpCount(data.length)).catch(() => {})
+            notifySyncComplete()
             return
           }
         } catch {
