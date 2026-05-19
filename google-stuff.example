@@ -1,0 +1,5 @@
+# Local notes only — copy to google-stuff (gitignored). Never commit real values.
+redirect=http://localhost:3000/api/auth/google/callback
+client=your_client_id.apps.googleusercontent.com
+secret=your_google_client_secret
+app_secret=your_32_char_secret_key

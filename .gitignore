@@ -1,5 +1,11 @@
 .env
+.env.*
+!.env.example
 secrets/
 data/
 frontend/node_modules/
 frontend/dist/
+google-stuff
+*client_secret*.json
+*.pem
+*.key
