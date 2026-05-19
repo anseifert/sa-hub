@@ -501,7 +501,40 @@ A redirect mismatch usually shows a **Google** error page, not 502. Ensure Conso
 
 `https://sa-hub.yourdomain.com/api/auth/google/callback`
 
-### 12. Optional: restrict by VPN
+### 12. Troubleshooting: Sync, login, and Ollama
+
+**Confirm you are on the current build** — backend logs should say `Starting sync...` (not `Starting hourly sync...`) after **Sync Now**. Rebuild both images:
+
+```bash
+podman-compose build --no-cache backend frontend
+podman-compose up -d
+```
+
+**Trailing `}` in `.env`** — if logs show `Stripped trailing '}' from URL env value`, fix lines like `PUBLIC_URL=https://sa-hub.digitalgiants.net}` (remove the `}`).
+
+**Gmail works but enrichment fails** — sync continues past Gmail; the next step calls **Ollama**. Pull the model once:
+
+```bash
+podman exec -it sa-hub-ollama ollama pull qwen2.5:7b-instruct
+```
+
+On startup, the backend logs a warning if the model is missing. After a failed sync, check the full traceback:
+
+```bash
+podman-compose logs backend --tail=80 | grep -A5 "Contact enrichment"
+```
+
+To skip AI steps until Ollama is ready, add to `.env`:
+
+```env
+SYNC_AI_ENABLED=false
+```
+
+**Do not click Sync Now twice** — wait for the spinner to finish (several minutes on first Gmail sync). Overlapping syncs slow the server.
+
+**Kicked to sign-in while sync runs** — rebuild the **frontend** so `/auth/session` failures from timeouts do not redirect to login (only HTTP 401 should). Backend `/auth/session` returning `200` in logs means your session is still valid.
+
+### 13. Optional: restrict by VPN
 
 You can still use **WiFiMan** and only use the site over VPN, or combine VPN + app login for defense in depth.
 

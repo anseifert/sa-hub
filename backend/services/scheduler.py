@@ -32,14 +32,14 @@ async def _run_sync_body(db):
     try:
         await sync_gmail(db)
         logger.info("Gmail sync complete")
-    except Exception as e:
-        logger.error(f"Gmail sync failed: {e}")
+    except Exception:
+        logger.exception("Gmail sync failed")
 
     try:
         await enrich_contacts(db)
         logger.info("Contact enrichment complete")
-    except Exception as e:
-        logger.error(f"Contact enrichment failed: {e}")
+    except Exception:
+        logger.exception("Contact enrichment failed")
 
     docs_content = ""
     slack_content = ""
@@ -47,20 +47,20 @@ async def _run_sync_body(db):
     try:
         docs_content = await fetch_recent_docs(db)
         logger.info("Drive sync complete")
-    except Exception as e:
-        logger.error(f"Drive sync failed: {e}")
+    except Exception:
+        logger.exception("Drive sync failed")
 
     try:
         slack_content = await fetch_recent_messages(db)
         logger.info("Slack sync complete")
-    except Exception as e:
-        logger.error(f"Slack sync failed: {e}")
+    except Exception:
+        logger.exception("Slack sync failed")
 
     try:
         await generate_one_pager(db, docs_content, slack_content)
         logger.info("One-pager generation complete")
-    except Exception as e:
-        logger.error(f"One-pager generation failed: {e}")
+    except Exception:
+        logger.exception("One-pager generation failed")
 
     logger.info("Sync body finished")
 

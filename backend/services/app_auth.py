@@ -84,8 +84,10 @@ def decode_session_token(token: str) -> str | None:
 
 
 def set_session_cookie(response: Response, token: str) -> None:
+    from services.url_config import get_public_url
+
     days = int(os.getenv("AUTH_SESSION_DAYS", "30"))
-    secure = os.getenv("PUBLIC_URL", "").strip().lower().startswith("https://")
+    secure = get_public_url().lower().startswith("https://")
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
@@ -98,7 +100,9 @@ def set_session_cookie(response: Response, token: str) -> None:
 
 
 def clear_session_cookie(response: Response) -> None:
-    secure = os.getenv("PUBLIC_URL", "").strip().lower().startswith("https://")
+    from services.url_config import get_public_url
+
+    secure = get_public_url().lower().startswith("https://")
     response.delete_cookie(key=COOKIE_NAME, path="/", secure=secure, samesite="lax")
 
 

@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import httpx
@@ -6,8 +7,47 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from models.db import Contact, Account, OnePager, FollowUp, SyncLog
 
+logger = logging.getLogger(__name__)
+
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://ollama:11434/v1").rstrip("/")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b-instruct")
+ENRICH_CONTACTS = os.getenv("ENRICH_CONTACTS", "true").lower() in ("1", "true", "yes")
+ENRICH_MAX_CONTACTS = int(os.getenv("ENRICH_MAX_CONTACTS", "150"))
+SYNC_AI_ENABLED = os.getenv("SYNC_AI_ENABLED", "true").lower() in ("1", "true", "yes")
+
+
+def _format_error(exc: BaseException) -> str:
+    msg = str(exc).strip()
+    if msg:
+        return f"{type(exc).__name__}: {msg}"
+    return f"{type(exc).__name__} (no message)"
+
+
+def _ollama_root() -> str:
+    return LLM_BASE_URL.replace("/v1", "").rstrip("/")
+
+
+async def check_llm_available() -> str | None:
+    """Return a human-readable error if Ollama/model is unavailable, else None."""
+    root = _ollama_root()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(f"{root}/api/tags")
+            r.raise_for_status()
+            names = [m.get("name", "") for m in r.json().get("models", [])]
+    except Exception as exc:
+        return f"Cannot reach Ollama at {root} — {_format_error(exc)}"
+
+    if not names:
+        return f"No models in Ollama. On the host run: podman exec -it sa-hub-ollama ollama pull {LLM_MODEL}"
+
+    model_base = LLM_MODEL.split(":")[0]
+    if not any(model_base in name for name in names):
+        return (
+            f"Model {LLM_MODEL!r} not loaded. Available: {', '.join(names[:5])}. "
+            f"Run: podman exec -it sa-hub-ollama ollama pull {LLM_MODEL}"
+        )
+    return None
 
 ONE_PAGER_SECTIONS = [
     {"key": "priorities", "title": "Current Priorities & Focus Areas", "order": 0},
@@ -32,9 +72,16 @@ async def chat_completion(system: str, user: str, max_tokens: int = 2000) -> str
                 "stream": False,
             },
         )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            body = response.text[:500]
+            raise RuntimeError(
+                f"LLM HTTP {response.status_code} from {LLM_BASE_URL}: {body or '(empty body)'}"
+            )
         data = response.json()
-        return data["choices"][0]["message"]["content"].strip()
+        try:
+            return data["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected LLM response shape: {_format_error(exc)}") from exc
 
 
 def _parse_json_array(text: str) -> list:
@@ -44,11 +91,27 @@ def _parse_json_array(text: str) -> list:
 
 async def enrich_contacts(db: AsyncSession):
     """Use local LLM to infer company names and group contacts into accounts."""
+    if not ENRICH_CONTACTS or not SYNC_AI_ENABLED:
+        logger.info("Contact enrichment skipped (ENRICH_CONTACTS / SYNC_AI_ENABLED)")
+        return
+
+    llm_err = await check_llm_available()
+    if llm_err:
+        raise RuntimeError(llm_err)
+
     result = await db.execute(select(Contact).where(Contact.company == None))
     contacts = result.scalars().all()
 
     if not contacts:
         return
+
+    if len(contacts) > ENRICH_MAX_CONTACTS:
+        logger.info(
+            "Limiting enrichment to %s of %s contacts (set ENRICH_MAX_CONTACTS to raise)",
+            ENRICH_MAX_CONTACTS,
+            len(contacts),
+        )
+        contacts = contacts[:ENRICH_MAX_CONTACTS]
 
     system_prompt = """You are a data enrichment assistant. Given a list of contacts with email addresses,
 infer the company name and job title if possible from the email domain and name.
@@ -73,9 +136,17 @@ If you cannot determine title, use null. Be concise."""
                 )
                 enriched = _parse_json_array(text)
                 break
-            except (json.JSONDecodeError, KeyError, IndexError):
+            except (json.JSONDecodeError, KeyError, IndexError) as exc:
+                logger.warning(
+                    "Enrichment JSON parse failed (batch %s, attempt %s): %s",
+                    i // 50,
+                    attempt + 1,
+                    _format_error(exc),
+                )
                 if attempt == 1:
                     enriched = None
+            except httpx.HTTPError as exc:
+                raise RuntimeError(f"LLM request failed: {_format_error(exc)}") from exc
 
         if not enriched:
             continue
@@ -125,11 +196,19 @@ async def _build_accounts(db: AsyncSession):
 
 async def generate_one_pager(db: AsyncSession, docs_content: str = "", slack_content: str = ""):
     """Generate/refresh unpinned one-pager sections using the local LLM."""
+    if not SYNC_AI_ENABLED:
+        logger.info("One-pager generation skipped (SYNC_AI_ENABLED=false)")
+        return
+
     log = SyncLog(sync_type="one_pager", status="running", started_at=datetime.utcnow())
     db.add(log)
     await db.commit()
 
     try:
+        llm_err = await check_llm_available()
+        if llm_err:
+            raise RuntimeError(llm_err)
+
         followups_result = await db.execute(
             select(FollowUp).where(FollowUp.resolved == False).limit(20)
         )

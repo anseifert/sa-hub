@@ -18,3 +18,7 @@ def get_frontend_url() -> str:
         os.getenv("FRONTEND_URL") or os.getenv("PUBLIC_URL"),
         "http://localhost:3000",
     )
+
+
+def get_public_url() -> str:
+    return normalize_base_url(os.getenv("PUBLIC_URL"), "http://localhost:3000")

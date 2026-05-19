@@ -9,7 +9,7 @@ from googleapiclient.discovery import build
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from models.db import OAuthToken
-from services.url_config import normalize_base_url
+from services.url_config import normalize_base_url, get_public_url
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -22,10 +22,7 @@ def get_redirect_uri() -> str:
     explicit = os.getenv("GOOGLE_REDIRECT_URI", "").strip()
     if explicit:
         return normalize_base_url(explicit, explicit)
-    public_url = normalize_base_url(
-        os.getenv("PUBLIC_URL"), "http://localhost:3000"
-    )
-    return f"{public_url}/api/auth/google/callback"
+    return f"{get_public_url()}/api/auth/google/callback"
 
 
 def _google_redirect_uri() -> str:
