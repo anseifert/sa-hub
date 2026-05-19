@@ -122,36 +122,52 @@ def _parse_json_array(text: str) -> list:
     return json.loads(text)
 
 
-async def enrich_contacts(db: AsyncSession):
-    """Use local LLM to infer company names and group contacts into accounts."""
-    if not ENRICH_CONTACTS or not SYNC_AI_ENABLED:
-        logger.info("Contact enrichment skipped (ENRICH_CONTACTS / SYNC_AI_ENABLED)")
-        return
+_PERSONAL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "yahoo.com", "hotmail.com",
+    "outlook.com", "live.com", "icloud.com", "me.com", "aol.com",
+})
 
-    llm_err = await check_llm_available()
-    if llm_err:
-        raise RuntimeError(llm_err)
 
-    result = await db.execute(select(Contact).where(Contact.company == None))
-    contacts = result.scalars().all()
+def _domain_to_company(domain: str) -> str | None:
+    """Infer a display company name from an email domain (no LLM)."""
+    if not domain:
+        return None
+    domain = domain.lower().strip()
+    if domain in _PERSONAL_DOMAINS:
+        return None
+    label = domain.split(".")[0]
+    if not label or label in ("mail", "email", "corp"):
+        return None
+    return label.replace("-", " ").title()
 
-    if not contacts:
-        return
 
-    if len(contacts) > ENRICH_MAX_CONTACTS:
-        logger.info(
-            "Limiting enrichment to %s of %s contacts (set ENRICH_MAX_CONTACTS to raise)",
-            ENRICH_MAX_CONTACTS,
-            len(contacts),
-        )
-        contacts = contacts[:ENRICH_MAX_CONTACTS]
+async def _enrich_contacts_from_domains(db: AsyncSession, contacts: list) -> int:
+    """Set company from email domain when LLM is unavailable."""
+    updated = 0
+    for contact in contacts:
+        if contact.company or not contact.domain:
+            continue
+        company = _domain_to_company(contact.domain)
+        if not company:
+            continue
+        contact.company = company
+        contact.updated_at = datetime.utcnow()
+        updated += 1
+    if updated:
+        await commit_with_retry(db)
+        logger.info("Domain-based enrichment updated %s contacts", updated)
+    return updated
 
+
+async def _enrich_contacts_with_llm(db: AsyncSession, contacts: list) -> int:
+    """LLM batch enrichment; returns count of contacts updated."""
     system_prompt = """You are a data enrichment assistant. Given a list of contacts with email addresses,
 infer the company name and job title if possible from the email domain and name.
 Return ONLY a JSON array with objects: {email, company, title}
 Use the domain to infer company (e.g. boeing.com -> Boeing, ford.com -> Ford).
 If you cannot determine title, use null. Be concise."""
 
+    updated = 0
     for i in range(0, len(contacts), 50):
         batch = contacts[i:i + 50]
         contact_list = [
@@ -176,10 +192,13 @@ If you cannot determine title, use null. Be concise."""
                     attempt + 1,
                     _format_error(exc),
                 )
-                if attempt == 1:
-                    enriched = None
-            except httpx.HTTPError as exc:
-                raise RuntimeError(f"LLM request failed: {_format_error(exc)}") from exc
+            except Exception as exc:
+                logger.warning(
+                    "LLM enrichment batch %s failed (attempt %s): %s",
+                    i // 50,
+                    attempt + 1,
+                    _format_error(exc),
+                )
 
         if not enriched:
             continue
@@ -188,12 +207,57 @@ If you cannot determine title, use null. Be concise."""
             email = item.get("email")
             for contact in batch:
                 if contact.email == email:
-                    contact.company = item.get("company")
+                    contact.company = item.get("company") or contact.company
                     contact.title = item.get("title")
                     contact.updated_at = datetime.utcnow()
+                    updated += 1
                     break
 
-    await commit_with_retry(db)
+    if updated:
+        await commit_with_retry(db)
+    return updated
+
+
+async def enrich_contacts(db: AsyncSession):
+    """Infer company names (LLM when available, else email domain) and build accounts."""
+    result = await db.execute(select(Contact).where(Contact.company == None))
+    contacts = list(result.scalars().all())
+
+    if not contacts:
+        await _build_accounts(db)
+        return
+
+    if not ENRICH_CONTACTS:
+        logger.info("LLM enrichment disabled (ENRICH_CONTACTS=false)")
+        await _enrich_contacts_from_domains(db, contacts)
+        await _build_accounts(db)
+        return
+
+    llm_ok = SYNC_AI_ENABLED
+    if llm_ok:
+        llm_err = await check_llm_available()
+        if llm_err:
+            logger.warning("Ollama unavailable for enrichment — using domains only: %s", llm_err)
+            llm_ok = False
+
+    if llm_ok:
+        if len(contacts) > ENRICH_MAX_CONTACTS:
+            logger.info(
+                "Limiting LLM enrichment to %s of %s contacts",
+                ENRICH_MAX_CONTACTS,
+                len(contacts),
+            )
+            llm_batch = contacts[:ENRICH_MAX_CONTACTS]
+        else:
+            llm_batch = contacts
+        try:
+            n = await _enrich_contacts_with_llm(db, llm_batch)
+            logger.info("LLM enrichment updated %s contacts", n)
+        except Exception as exc:
+            logger.exception("LLM enrichment failed: %s", _format_error(exc))
+
+    # Fill any still-missing company from domain (also covers LLM partial failure)
+    await _enrich_contacts_from_domains(db, contacts)
     await _build_accounts(db)
 
 

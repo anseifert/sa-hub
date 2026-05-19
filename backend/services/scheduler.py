@@ -82,9 +82,11 @@ def start_scheduler():
         trigger=IntervalTrigger(hours=1),
         id="hourly_sync",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.start()
-    logger.info("Scheduler started - hourly sync active")
+    logger.info("Scheduler started — sync every hour (skips if already running)")
 
 
 def stop_scheduler():
