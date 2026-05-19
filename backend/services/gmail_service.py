@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from models.db import Contact, FollowUp, SyncLog
 from services.google_auth import get_credentials
+from services.db_util import commit_with_retry, rollback_session
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +194,7 @@ async def _persist_gmail_data(db: AsyncSession, data: dict) -> None:
         else:
             db.add(Contact(**row))
 
-    await db.commit()
+    await commit_with_retry(db)
 
     for fu in data["follow_ups"]:
         result = await db.execute(
@@ -216,13 +217,13 @@ async def _persist_gmail_data(db: AsyncSession, data: dict) -> None:
                 days_waiting=fu["days_waiting"],
             ))
 
-    await db.commit()
+    await commit_with_retry(db)
 
 
 async def sync_gmail(db: AsyncSession):
     log = SyncLog(sync_type="gmail", status="running", started_at=datetime.utcnow())
     db.add(log)
-    await db.commit()
+    await commit_with_retry(db)
 
     try:
         creds = await get_credentials(db)
@@ -243,12 +244,17 @@ async def sync_gmail(db: AsyncSession):
             f"{len(data['contacts_map'])} contacts"
         )
         log.finished_at = datetime.utcnow()
-        await db.commit()
+        await commit_with_retry(db)
 
     except Exception as e:
+        logger.exception("Gmail sync failed")
+        await rollback_session(db)
+        await db.refresh(log)
         log.status = "error"
         log.message = str(e)
         log.finished_at = datetime.utcnow()
-        await db.commit()
-        logger.exception("Gmail sync failed")
+        try:
+            await commit_with_retry(db)
+        except Exception:
+            logger.exception("Could not persist Gmail sync error log")
 

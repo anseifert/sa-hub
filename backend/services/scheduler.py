@@ -5,6 +5,7 @@ from services.gmail_service import sync_gmail
 from services.drive_service import fetch_recent_docs
 from services.slack_service import fetch_recent_messages
 from services.ai_service import enrich_contacts, generate_one_pager
+from services.db_util import rollback_session
 import logging
 
 logger = logging.getLogger(__name__)
@@ -21,47 +22,41 @@ async def run_full_sync():
 
     async def _do_sync():
         logger.info("Starting sync...")
-        async with SessionLocal() as db:
-            await _run_sync_body(db)
+        await _run_sync_body()
 
     await run_sync_guarded(_do_sync)
 
 
-async def _run_sync_body(db):
+async def _run_sync_step(step_name: str, fn):
+    """Each step uses its own DB session so a lock in one step cannot poison the next."""
+    async with SessionLocal() as db:
+        try:
+            return await fn(db)
+        except Exception:
+            logger.exception("%s failed", step_name)
+            await rollback_session(db)
+            return None
+
+
+async def _run_sync_body():
     logger.info("Sync body started")
-    try:
-        await sync_gmail(db)
-        logger.info("Gmail sync complete")
-    except Exception:
-        logger.exception("Gmail sync failed")
 
-    try:
-        await enrich_contacts(db)
-        logger.info("Contact enrichment complete")
-    except Exception:
-        logger.exception("Contact enrichment failed")
+    await _run_sync_step("Gmail sync", sync_gmail)
+    logger.info("Gmail sync step finished")
 
-    docs_content = ""
-    slack_content = ""
+    await _run_sync_step("Contact enrichment", enrich_contacts)
+    logger.info("Contact enrichment step finished")
 
-    try:
-        docs_content = await fetch_recent_docs(db)
-        logger.info("Drive sync complete")
-    except Exception:
-        logger.exception("Drive sync failed")
+    docs_content = await _run_sync_step("Drive sync", fetch_recent_docs) or ""
+    logger.info("Drive sync step finished")
 
-    try:
-        slack_content = await fetch_recent_messages(db)
-        logger.info("Slack sync complete")
-    except Exception:
-        logger.exception("Slack sync failed")
+    slack_content = await _run_sync_step("Slack sync", fetch_recent_messages) or ""
+    logger.info("Slack sync step finished")
 
-    try:
+    async def _one_pager(db):
         await generate_one_pager(db, docs_content, slack_content)
-        logger.info("One-pager generation complete")
-    except Exception:
-        logger.exception("One-pager generation failed")
 
+    await _run_sync_step("One-pager generation", _one_pager)
     logger.info("Sync body finished")
 
 

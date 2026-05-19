@@ -532,6 +532,8 @@ SYNC_AI_ENABLED=false
 
 **Do not click Sync Now twice** — wait for the spinner to finish (several minutes on first Gmail sync). Overlapping syncs slow the server.
 
+**`database is locked` during sync** — rebuild the backend (enables SQLite WAL + per-step transactions). If it persists, ensure only one sync runs and `./data` is on local disk, not NFS.
+
 **Kicked to sign-in while sync runs** — rebuild the **frontend** so `/auth/session` failures from timeouts do not redirect to login (only HTTP 401 should). Backend `/auth/session` returning `200` in logs means your session is still valid.
 
 ### 13. Optional: restrict by VPN

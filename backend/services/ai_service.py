@@ -6,6 +6,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from models.db import Contact, Account, OnePager, FollowUp, SyncLog
+from services.db_util import commit_with_retry, rollback_session
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,7 @@ If you cannot determine title, use null. Be concise."""
                     contact.updated_at = datetime.utcnow()
                     break
 
-    await db.commit()
+    await commit_with_retry(db)
     await _build_accounts(db)
 
 
@@ -191,7 +192,7 @@ async def _build_accounts(db: AsyncSession):
                 last_activity=last_activity,
             ))
 
-    await db.commit()
+    await commit_with_retry(db)
 
 
 async def generate_one_pager(db: AsyncSession, docs_content: str = "", slack_content: str = ""):
@@ -202,7 +203,7 @@ async def generate_one_pager(db: AsyncSession, docs_content: str = "", slack_con
 
     log = SyncLog(sync_type="one_pager", status="running", started_at=datetime.utcnow())
     db.add(log)
-    await db.commit()
+    await commit_with_retry(db)
 
     try:
         llm_err = await check_llm_available()
@@ -270,15 +271,19 @@ Base your response only on the context provided."""
                     last_ai_generated=datetime.utcnow(),
                 ))
 
-        await db.commit()
         log.status = "success"
         log.message = f"Generated {len(ONE_PAGER_SECTIONS) - len(pinned_keys)} sections"
         log.finished_at = datetime.utcnow()
-        await db.commit()
+        await commit_with_retry(db)
 
     except Exception as e:
+        logger.exception("One-pager generation failed")
+        await rollback_session(db)
+        await db.refresh(log)
         log.status = "error"
         log.message = str(e)
         log.finished_at = datetime.utcnow()
-        await db.commit()
-        raise
+        try:
+            await commit_with_retry(db)
+        except Exception:
+            logger.exception("Could not persist one-pager sync error log")

@@ -13,10 +13,12 @@ To set up:
 3. Install to your workspace (requires admin approval for corporate Slack)
 4. Add SLACK_BOT_TOKEN to your .env
 """
+import logging
 import os
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from models.db import SyncLog
+from services.db_util import commit_with_retry, rollback_session
 
 try:
     from slack_sdk.web.async_client import AsyncWebClient
@@ -24,6 +26,8 @@ try:
     SLACK_AVAILABLE = True
 except ImportError:
     SLACK_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 async def is_connected() -> bool:
@@ -37,7 +41,7 @@ async def fetch_recent_messages(db: AsyncSession, days_back: int = 7) -> str:
 
     log = SyncLog(sync_type="slack", status="running", started_at=datetime.utcnow())
     db.add(log)
-    await db.commit()
+    await commit_with_retry(db)
 
     try:
         client = AsyncWebClient(token=os.getenv("SLACK_BOT_TOKEN"))
@@ -71,13 +75,19 @@ async def fetch_recent_messages(db: AsyncSession, days_back: int = 7) -> str:
         log.status = "success"
         log.message = f"Fetched messages from {len(channels)} channels"
         log.finished_at = datetime.utcnow()
-        await db.commit()
+        await commit_with_retry(db)
 
         return "\n".join(all_messages[:100])
 
     except Exception as e:
+        logger.error("Slack sync failed: %s", e)
+        await rollback_session(db)
+        await db.refresh(log)
         log.status = "error"
         log.message = str(e)
         log.finished_at = datetime.utcnow()
-        await db.commit()
+        try:
+            await commit_with_retry(db)
+        except Exception:
+            logger.exception("Could not persist slack sync error log")
         return ""

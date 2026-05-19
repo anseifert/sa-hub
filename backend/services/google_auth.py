@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from models.db import OAuthToken
 from services.url_config import normalize_base_url, get_public_url
+from services.db_util import commit_with_retry
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -75,7 +76,7 @@ async def save_token(db: AsyncSession, credentials: Credentials):
     else:
         token = OAuthToken(provider="google", **token_data)
         db.add(token)
-    await db.commit()
+    await commit_with_retry(db)
 
 
 async def get_credentials(db: AsyncSession) -> Credentials | None:

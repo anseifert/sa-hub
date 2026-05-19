@@ -5,6 +5,7 @@ from googleapiclient.errors import HttpError
 from sqlalchemy.ext.asyncio import AsyncSession
 from models.db import SyncLog
 from services.google_auth import get_credentials
+from services.db_util import commit_with_retry, rollback_session
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ async def fetch_recent_docs(db: AsyncSession, max_docs: int = 10) -> str:
     """Fetch text from recent Google Docs via Drive export (drive.readonly only)."""
     log = SyncLog(sync_type="drive", status="running", started_at=datetime.utcnow())
     db.add(log)
-    await db.commit()
+    await commit_with_retry(db)
 
     try:
         creds = await get_credentials(db)
@@ -81,15 +82,20 @@ async def fetch_recent_docs(db: AsyncSession, max_docs: int = 10) -> str:
         log.status = "success"
         log.message = f"Fetched {doc_count} docs"
         log.finished_at = datetime.utcnow()
-        await db.commit()
+        await commit_with_retry(db)
 
         return combined_text
 
     except Exception as e:
         msg = _format_drive_error(e)
+        logger.error("Drive sync failed: %s", msg)
+        await rollback_session(db)
+        await db.refresh(log)
         log.status = "error"
         log.message = msg
         log.finished_at = datetime.utcnow()
-        await db.commit()
-        logger.error("Drive sync failed: %s", msg)
+        try:
+            await commit_with_retry(db)
+        except Exception:
+            logger.exception("Could not persist drive sync error log")
         return ""
